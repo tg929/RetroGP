@@ -1,6 +1,6 @@
 
 from __future__ import annotations
-from typing import Iterable, Set
+from typing import Iterable, Iterator, Set
 from .molecules import canonical_smiles
 
 class Inventory:
@@ -22,6 +22,9 @@ class Inventory:
 
     def __contains__(self, smi: str) -> bool:
         return self.is_purchasable(smi)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._set)
 
     @classmethod
     def from_file(cls, path: str) -> "Inventory":
