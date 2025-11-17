@@ -1,33 +1,34 @@
-# run.py
+# run_repr_demo.py  （原 run.py）
 from gp_retro_repr import (
-    Inventory, ReactionTemplateRegistry, ReactionTemplate,
     Program, Select, ApplyTemplate, Stop, ExecutionConfig
 )
 
+from demo_utils import build_world_t1  # 统一世界
+
 def main():
-    # 1) 可购库存（示例）  定义的测试：库存数据库就是这样
-    stock = Inventory(["CCO", "O=C=O"])
+    # 1) 统一的库存 + 模板 + 目标
+    stock, reg, target = build_world_t1()
 
-    # 2) 模板库（示例 retro 模板）
-    reg = ReactionTemplateRegistry()
-    reg.add(ReactionTemplate("T1", "[C:1]-[O:2]>>[C:1]=O.[O:2]"))
+    # 2) DP 程序：告诉解释器“怎么拆”
+    prog = Program([
+        Select(0),
+        ApplyTemplate("T1", rational="disconnection"),
+        Stop()
+    ])
 
-    # 3) DP 程序
-    prog = Program([Select(0), ApplyTemplate("T1", rational="disconnection"), Stop()])  #自己定义的名称（模板名称）
     cfg = ExecutionConfig(template_registry=reg, inventory=stock)
-    #####DP：相当于一个指令集，告诉解释器我要怎么做逆合成。
-         #DP = 用一小段“程序”把“如何一步步把目标分子拆成可购原料”描述出来。
 
-    # 4) 执行程序
-    route = prog.execute(target_smiles="CCO", config=cfg)
+    # 3) 执行程序 -> 顺序化路线
+    route = prog.execute(target_smiles=target, config=cfg)
     print(route.to_json())
-    print(route.is_solved(stock))  # 可能是 False（示例库存很小）
+    print(route.is_solved(stock))
 
 if __name__ == "__main__":
     try:
         main()
-    except Exception as e:        
+    except Exception:
         import traceback; traceback.print_exc()
+
 
 #就是：我有一个自定义库存数据库，里面存放的是可购分子；
 # 有一个自定义的 retro 模板库，里面存放的是一些 retro 模板；

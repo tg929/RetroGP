@@ -1,19 +1,19 @@
 # run_feas_demo.py
-import sys, os, traceback
+import sys
+import traceback
 
 from gp_retro_repr import (
-    Inventory, ReactionTemplateRegistry, ReactionTemplate,
     Program, Select, ApplyTemplate, Stop
 )
 from gp_retro_feas import (
     TemplateTyping, TemplatePreselector, ActionMaskBuilder, FeasibleExecutor
 )
 
+from demo_utils import build_world_t1  # 统一的库存 + 模板 + 目标
+
 def main():
-    # 1) 库存与模板（示例）
-    stock = Inventory(["CC=O", "O"])
-    reg = ReactionTemplateRegistry()
-    reg.add(ReactionTemplate("T1", "[C:1]-[O:2]>>[C:1]=O.[O:2]", metadata={"family": "oxidation"}))
+    # 1) 库存与模板（示例）——改为从 demo_utils 统一获取
+    stock, reg, target = build_world_t1()
 
     # 2) 家族需求（可选但推荐）
     typing = TemplateTyping()
@@ -21,25 +21,26 @@ def main():
     typing.set_family_requirement("oxidation", {"alcohol"})
 
     # 3) 预筛 + 掩码
-    pre = TemplatePreselector(reg, typing=typing).preselect("CCO")
+    pre = TemplatePreselector(reg, typing=typing).preselect(target)
     print("FG gating:", pre.reasoning)
-    mask = ActionMaskBuilder(reg, inventory=stock).build("CCO")
+    mask = ActionMaskBuilder(reg, inventory=stock).build(target)
     print("Feasible templates:", mask.feasible_templates)
 
     # 4) 可行执行（失败自动修复）
     exe = FeasibleExecutor(reg, inventory=stock)
     prog = Program([Select(0), ApplyTemplate("T1", rational="demo"), Stop()])
-    route = exe.execute(prog, target_smiles="CCO")
+    route = exe.execute(prog, target_smiles=target)
     print(route.to_json())
     print("Solved:", route.is_solved(stock))
 
 if __name__ == "__main__":
     try:
         main()
-    except Exception as e:
+    except Exception:
         # 确保任何错误都能在控制台看到
         traceback.print_exc()
         sys.exit(1)
+
 
 #库存+反应模板；
 #家族需求：给模板打上标签，并定义每个标签对应的官能团需求；
