@@ -14,7 +14,7 @@ import traceback
 from typing import List, Dict, Any, Tuple
 
 # 表示层 / 可行性层
-from gp_retro_repr import Program, Select, ApplyTemplate, Stop
+from gp_retro_repr import Program, Route, Select, ApplyTemplate, Stop
 from gp_retro_feas import FeasibleExecutor
 
 # 目标与适应度层
@@ -65,16 +65,17 @@ def make_audit_fn(stock, target_smiles: str):
 def templates_of_program(prog: Program) -> List[str]:
     """抽取 Program 中所有 ApplyTemplate 的 template_id 顺序列表"""
     tids = []
-    for step in prog.steps:
-        if isinstance(step, ApplyTemplate):
-            tids.append(step.template_id)
+    for instr in prog.instructions:
+        if isinstance(instr, ApplyTemplate):
+            tids.append(instr.template_id)
     return tids
 
 
 def program_from_templates(template_ids: List[str]) -> Program:
-    """把 template 序列还原成标准 DP：Select(0) -> Apply* -> Stop()"""
-    steps = [Select(0)]
+    """把 template 序列还原成标准 DP：Select(0)->Apply(T)->Select(0)->...->Stop()"""
+    steps = []
     for tid in template_ids:
+        steps.append(Select(0))                  # 每次应用前选中目标分子（简单示例：总是 index=0）
         steps.append(ApplyTemplate(tid, rational="gp"))
     steps.append(Stop())
     return Program(steps)
@@ -135,8 +136,18 @@ def evaluate_program(
     evaluator: RouteFitnessEvaluator,
     target: str,
 ) -> Dict[str, Any]:
-    route = exe.execute(prog, target_smiles=target)
+    # Executor may fail if a template has no applicable reactants (e.g., T1 on a non-alcohol).
+    # Treat that as an infeasible route instead of crashing the whole GP run.
+    error_reason = None
+    try:
+        route = exe.execute(prog, target_smiles=target)
+    except Exception as e:
+        route = Route()  # empty route => audit_fn marks as unsolved
+        error_reason = str(e)
+
     fit = evaluator.evaluate(route)
+    if error_reason:
+        fit.extra["executor_error"] = error_reason
     return {"program": prog, "route": route, "fitness": fit}
 
 

@@ -61,6 +61,11 @@ class ReactionTemplateRegistry:
             raise KeyError(f"Template id not found: {template_id}")
         return self._by_id[template_id]
 
+    @property
+    def templates(self) -> Dict[str, ReactionTemplate]:
+        """Expose template mapping for callers that expect a dict-like attribute."""
+        return self._by_id
+
     def __contains__(self, template_id: str) -> bool:
         return template_id in self._by_id
 
