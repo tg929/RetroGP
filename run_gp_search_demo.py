@@ -1,12 +1,16 @@
 # run_gp_search_demo.py
 # 一个“最小可跑”的多目标 GP 搜索主循环
 
+import os
 import random
 import copy
 import statistics
 import sys
 import traceback
 from typing import List, Dict, Any, Tuple
+
+import numpy as np
+from scscore.scscore.standalone_model_numpy import SCScorer
 
 from gp_retro_repr import Program, Select, ApplyTemplate, Stop
 from gp_retro_feas import FeasibleExecutor
@@ -17,12 +21,46 @@ from gp_retro_obj import (
 )
 from demo_utils import build_world_t1, build_objectives_default
 
-# 新增：SCScore 封装
-from llm_syn_planner.scscore_reward import make_scscore
+
+# --------------------------------------------------------------------
+# 0) SCScore 加载（不依赖环境变量）
+# --------------------------------------------------------------------
+
+SC_MODEL_DIR = os.path.join(
+    os.path.dirname(__file__),
+    "scscore",
+    "models",
+    "full_reaxys_model_1024bool",
+)
+SC_FP_LENGTH = 1024
+_scscore_model = None
+
+
+def build_scscore_fn():
+    global _scscore_model
+    if _scscore_model is None:
+        model = SCScorer()
+        model.restore(SC_MODEL_DIR, SC_FP_LENGTH)
+        _scscore_model = model
+
+    def _score(smiles: str) -> float:
+        if not smiles:
+            return 5.0
+        out = _scscore_model.get_score_from_smi(smiles)
+        if isinstance(out, (tuple, list)) and len(out) == 2:
+            _, arr = out
+        else:
+            arr = out
+        arr = np.asarray(arr, dtype=float)
+        if arr.ndim == 0:
+            return float(arr)
+        return float(arr.mean())
+
+    return _score
 
 
 # --------------------------------------------------------------------
-# 0) 审计函数：把 Route → is_solved / 当前分子集 / 步数
+# 1) 审计函数
 # --------------------------------------------------------------------
 def make_audit_fn(stock, target_smiles: str):
     def audit_route(route):
@@ -44,14 +82,22 @@ def make_audit_fn(stock, target_smiles: str):
 
 
 # --------------------------------------------------------------------
-# 1) DP 程序编码与操作（模板序列 <-> Program）
+# 2) DP 程序编码与操作（模板序列 <-> Program）
 # --------------------------------------------------------------------
+# def templates_of_program(prog: Program) -> List[str]:
+#     tids = []
+#     for step in prog.steps:
+#         if isinstance(step, ApplyTemplate):
+#             tids.append(step.template_id)
+#     return tids
 def templates_of_program(prog: Program) -> List[str]:
-    tids = []
-    for step in prog.steps:
-        if isinstance(step, ApplyTemplate):
-            tids.append(step.template_id)
+    """从 Program 中抽取出所有 ApplyTemplate 的 template_id 序列。"""
+    tids: List[str] = []
+    for instr in prog.instructions:   # ← 关键：用 instructions，而不是 steps
+        if isinstance(instr, ApplyTemplate):
+            tids.append(instr.template_id)
     return tids
+
 
 
 def program_from_templates(template_ids: List[str]) -> Program:
@@ -104,21 +150,62 @@ def mutate_program(
 
 
 # --------------------------------------------------------------------
-# 2) 个体评估：Program -> Route -> Fitness
+# 3) 个体评估：Program -> Route -> Fitness
 # --------------------------------------------------------------------
+# def evaluate_program(
+#     prog: Program,
+#     exe: FeasibleExecutor,
+#     evaluator: RouteFitnessEvaluator,
+#     target: str,
+# ) -> Dict[str, Any]:
+#     route = exe.execute(prog, target_smiles=target)
+#     fit = evaluator.evaluate(route)
+#     return {"program": prog, "route": route, "fitness": fit}
+
 def evaluate_program(
     prog: Program,
     exe: FeasibleExecutor,
     evaluator: RouteFitnessEvaluator,
     target: str,
 ) -> Dict[str, Any]:
-    route = exe.execute(prog, target_smiles=target)
+    """
+    执行 DP 程序并计算适应度。
+    如果程序结构非法导致 FeasibleExecutor 抛出异常，
+    则把该个体视为“失败路线”（用一个空路线代替），
+    保证 GP 循环不会因为坏个体直接崩溃。
+    """
+    try:
+        route = exe.execute(prog, target_smiles=target)
+    except Exception as e:
+        # 打印一下方便调试（可选）
+        # print(f"[WARN] executor failed for program: {prog}, err={e}")
+
+        # 构造一个“空程序”作为失败个体：只包含 Stop
+        safe_prog = Program([Stop()])
+
+        try:
+            route = exe.execute(safe_prog, target_smiles=target)
+        except Exception:
+            # 理论上不会再失败；保险起见，构造一个最小的“空壳”对象
+            class DummyRoute:
+                def __init__(self, target_smiles):
+                    self.steps = []
+                    self.target_smiles = target_smiles
+
+                def to_json(self):
+                    return "[]"
+
+                def is_solved(self, stock):
+                    return False
+
+            route = DummyRoute(target)
+
     fit = evaluator.evaluate(route)
     return {"program": prog, "route": route, "fitness": fit}
 
 
 # --------------------------------------------------------------------
-# 3) GP 主循环
+# 4) GP 主循环
 # --------------------------------------------------------------------
 def run_gp_search(
     pop_size=20,
@@ -129,33 +216,32 @@ def run_gp_search(
 ):
     random.seed(seed)
 
-    # 世界 + 可行性执行器
     stock, reg, target = build_world_t1()
     exe = FeasibleExecutor(reg, inventory=stock)
 
-    # === 新增：初始化 SCScore 模型 ===
-    sc_fn, _ = make_scscore()  # sc_fn(smiles) -> float
+    # === 初始化 SCScore 函数 ===
+    sc_fn = build_scscore_fn()
 
     specs = build_objectives_default()
     evaluator = RouteFitnessEvaluator(
         objective_specs=specs,
         purchasable_fn=stock.is_purchasable,
         audit_fn=make_audit_fn(stock, target_smiles=target),
-        scscore_fn=sc_fn,        # ★ 把 SCScore 函数传进来
+        scscore_fn=sc_fn,   # ★ 真正用上 SCScore
         target_smiles=target,
     )
     senses = {k: spec.direction() for k, spec in specs.items()}
     objective_keys = list(specs.keys())
 
-    template_pool = list(reg.templates.keys())  # 例如 ["T1", ...]
+    template_pool = list(reg.templates.keys())
 
-    # ------ 初始化种群 ------
+    # 初始化种群
     population: List[Dict[str, Any]] = []
     for _ in range(pop_size):
         prog = random_program(template_pool, min_len=0, max_len=3)
         population.append(evaluate_program(prog, exe, evaluator, target))
 
-    # ------ 进化循环 ------
+    # 进化循环
     for gen in range(1, generations + 1):
         scalars = [ind["fitness"].scalar for ind in population]
         solved_count = sum(
@@ -171,7 +257,6 @@ def run_gp_search(
             f"mean_scalar: {statistics.mean(scalars):.3f}"
         )
 
-        # --- 父代选择：ε-lexicase ---
         parents = epsilon_lexicase_select(
             population,
             senses=senses,
@@ -180,7 +265,6 @@ def run_gp_search(
             n_parents=pop_size,
         )
 
-        # --- 生成子代：交叉 + 突变 + 评估 ---
         offspring: List[Dict[str, Any]] = []
         i = 0
         while len(offspring) < pop_size:
@@ -206,13 +290,12 @@ def run_gp_search(
                 if len(offspring) >= pop_size:
                     break
 
-        # --- 生存者选择：父代 + 子代 → NSGA-II 选出下一代 ---
         combined = population + offspring
         population = nsga2_survivor_selection(
             combined, k=pop_size, senses=senses, objective_keys=objective_keys
         )
 
-    # ------ 结束：输出若干条最优解 ------
+    # 输出最终若干条解
     population.sort(key=lambda ind: ind["fitness"].scalar, reverse=True)
     print("\n=== Final top solutions ===")
     topk = min(5, len(population))
@@ -243,3 +326,5 @@ if __name__ == "__main__":
     except Exception:
         traceback.print_exc()
         sys.exit(1)
+# 这个脚本实现了一个简单的基于遗传编程的多目标分子合成路径搜索。
+# 它使用 SCScore 作为其中一个目标函数，结合库存分子和反应模板，评估和进化合成路径程序。
