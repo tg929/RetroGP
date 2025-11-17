@@ -15,8 +15,10 @@ from gp_retro_obj import (
     epsilon_lexicase_select,
     nsga2_survivor_selection,
 )
-
 from demo_utils import build_world_t1, build_objectives_default
+
+# 新增：从补丁包里引入 SCScore 封装
+from llm_syn_planner.scscore_reward import make_scscore
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +60,10 @@ def main():
     print(f"Target SMILES: {target}")
     print(f"Stock molecules: {list(stock)}")
 
+    # === 新增：初始化 SCScore 模型（一次即可） ===
+    # 如果你的 scscore 模型需要指定模型目录，可以在这里传 model_dir 或设置 SCSCORE_MODEL_DIR 环境变量
+    sc_fn, _ = make_scscore()  # 我们只用到第一个返回值：scscore_fn(smiles) -> float
+
     # 2.2 定义两条 DP 程序
     prog_good = Program(
         [Select(0), ApplyTemplate("T1", rational="good_demo"), Stop()]
@@ -74,6 +80,7 @@ def main():
         objective_specs=specs,
         purchasable_fn=stock.is_purchasable,
         audit_fn=audit_fn,
+        scscore_fn=sc_fn,      # ★ 关键：把真实 SCScore 函数接进来
         target_smiles=target,
     )
 

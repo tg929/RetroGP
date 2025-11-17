@@ -1,2 +1,4 @@
 *.md
 *.pyc
+scscore-master/*
+scscore/*

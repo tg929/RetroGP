@@ -1,10 +1,5 @@
-# run_gp_search.py
+# run_gp_search_demo.py
 # 一个“最小可跑”的多目标 GP 搜索主循环
-# - 初始化随机 DP 程序种群
-# - 评估(执行->多目标->标量)
-# - 选择(ε-lexicase父代 + NSGA-II生存者)
-# - 交叉/突变
-# - 多代进化，输出 Pareto 方向上的优秀路线
 
 import random
 import copy
@@ -13,34 +8,23 @@ import sys
 import traceback
 from typing import List, Dict, Any, Tuple
 
-# 表示层 / 可行性层
-from gp_retro_repr import Program, Route, Select, ApplyTemplate, Stop
+from gp_retro_repr import Program, Select, ApplyTemplate, Stop
 from gp_retro_feas import FeasibleExecutor
-
-# 目标与适应度层
 from gp_retro_obj import (
     RouteFitnessEvaluator,
     epsilon_lexicase_select,
     nsga2_survivor_selection,
 )
-
-# 统一的“世界配置”和“目标配置”
 from demo_utils import build_world_t1, build_objectives_default
 
+# 新增：SCScore 封装
+from llm_syn_planner.scscore_reward import make_scscore
+
 
 # --------------------------------------------------------------------
-# 0) 审计函数：把 Route → is_solved / 当前分子集 / 步数 等信息
+# 0) 审计函数：把 Route → is_solved / 当前分子集 / 步数
 # --------------------------------------------------------------------
 def make_audit_fn(stock, target_smiles: str):
-    """
-    RouteFitnessEvaluator 期望有一个 audit_fn(route)，返回：
-        is_solved: bool
-        first_invalid_molecule_set: List[str]
-        current_molecule_set: List[str]
-        n_steps: int
-        n_valid_steps: int
-    这里给一个和 run_obj_demo.py 一致的简单实现。
-    """
     def audit_route(route):
         if route.steps:
             final_set = route.steps[-1].updated_molecule_set
@@ -63,19 +47,16 @@ def make_audit_fn(stock, target_smiles: str):
 # 1) DP 程序编码与操作（模板序列 <-> Program）
 # --------------------------------------------------------------------
 def templates_of_program(prog: Program) -> List[str]:
-    """抽取 Program 中所有 ApplyTemplate 的 template_id 顺序列表"""
     tids = []
-    for instr in prog.instructions:
-        if isinstance(instr, ApplyTemplate):
-            tids.append(instr.template_id)
+    for step in prog.steps:
+        if isinstance(step, ApplyTemplate):
+            tids.append(step.template_id)
     return tids
 
 
 def program_from_templates(template_ids: List[str]) -> Program:
-    """把 template 序列还原成标准 DP：Select(0)->Apply(T)->Select(0)->...->Stop()"""
-    steps = []
+    steps = [Select(0)]
     for tid in template_ids:
-        steps.append(Select(0))                  # 每次应用前选中目标分子（简单示例：总是 index=0）
         steps.append(ApplyTemplate(tid, rational="gp"))
     steps.append(Stop())
     return Program(steps)
@@ -88,7 +69,6 @@ def random_program(template_pool: List[str], min_len=0, max_len=3) -> Program:
 
 
 def crossover_one_point(p1: Program, p2: Program) -> Tuple[Program, Program]:
-    """单点交叉：在模板序列上做切分再拼接"""
     t1 = templates_of_program(p1)
     t2 = templates_of_program(p2)
     c1 = random.randint(0, len(t1))
@@ -106,21 +86,17 @@ def mutate_program(
     p_modify=0.30,
     max_total_len=5,
 ) -> Program:
-    """在模板序列上做插入/删除/替换"""
     t = templates_of_program(p)
     op = random.random()
     if op < p_insert:
-        # 插入
         if len(t) < max_total_len:
             pos = random.randint(0, len(t))
             t.insert(pos, random.choice(template_pool))
     elif op < p_insert + p_delete:
-        # 删除
         if len(t) > 0:
             pos = random.randrange(len(t))
             t.pop(pos)
     else:
-        # 修改
         if len(t) > 0:
             pos = random.randrange(len(t))
             t[pos] = random.choice(template_pool)
@@ -136,18 +112,8 @@ def evaluate_program(
     evaluator: RouteFitnessEvaluator,
     target: str,
 ) -> Dict[str, Any]:
-    # Executor may fail if a template has no applicable reactants (e.g., T1 on a non-alcohol).
-    # Treat that as an infeasible route instead of crashing the whole GP run.
-    error_reason = None
-    try:
-        route = exe.execute(prog, target_smiles=target)
-    except Exception as e:
-        route = Route()  # empty route => audit_fn marks as unsolved
-        error_reason = str(e)
-
+    route = exe.execute(prog, target_smiles=target)
     fit = evaluator.evaluate(route)
-    if error_reason:
-        fit.extra["executor_error"] = error_reason
     return {"program": prog, "route": route, "fitness": fit}
 
 
@@ -163,15 +129,19 @@ def run_gp_search(
 ):
     random.seed(seed)
 
-    # 世界 + 评估器（都来自 demo_utils）
+    # 世界 + 可行性执行器
     stock, reg, target = build_world_t1()
     exe = FeasibleExecutor(reg, inventory=stock)
+
+    # === 新增：初始化 SCScore 模型 ===
+    sc_fn, _ = make_scscore()  # sc_fn(smiles) -> float
 
     specs = build_objectives_default()
     evaluator = RouteFitnessEvaluator(
         objective_specs=specs,
         purchasable_fn=stock.is_purchasable,
         audit_fn=make_audit_fn(stock, target_smiles=target),
+        scscore_fn=sc_fn,        # ★ 把 SCScore 函数传进来
         target_smiles=target,
     )
     senses = {k: spec.direction() for k, spec in specs.items()}
@@ -189,7 +159,8 @@ def run_gp_search(
     for gen in range(1, generations + 1):
         scalars = [ind["fitness"].scalar for ind in population]
         solved_count = sum(
-            1 for ind in population if ind["fitness"].objectives.get("solved", 0) > 0.5
+            1 for ind in population
+            if ind["fitness"].objectives.get("solved", 0) > 0.5
         )
         best = max(population, key=lambda ind: ind["fitness"].scalar)
 
@@ -213,7 +184,6 @@ def run_gp_search(
         offspring: List[Dict[str, Any]] = []
         i = 0
         while len(offspring) < pop_size:
-            # 交叉或复制
             if random.random() < p_crossover and i + 1 < len(parents):
                 p1 = parents[i]["program"]
                 p2 = parents[i + 1]["program"]
@@ -225,14 +195,12 @@ def run_gp_search(
                 children = [copy.deepcopy(p0)]
                 i += 1
 
-            # 突变
             new_children = []
             for ch in children:
                 if random.random() < p_mutation:
                     ch = mutate_program(ch, template_pool)
                 new_children.append(ch)
 
-            # 评估
             for ch in new_children:
                 offspring.append(evaluate_program(ch, exe, evaluator, target))
                 if len(offspring) >= pop_size:
