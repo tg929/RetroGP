@@ -35,14 +35,19 @@ def run():
     specs = build_objectives(config.OBJECTIVE_WEIGHTS)
     hist = MetricsHistory()
 
-    for ti, target in enumerate(targets[:50]):
+    for ti, target in enumerate(targets[:10]):
         print(f"\n=== Target {ti+1}: {target} ===")
 
         # 针对当前目标先做一次可行动作掩码，避免全部落空
         mask = ActionMaskBuilder(reg, inventory=inventory).build(target)
-        template_pool = mask.feasible_templates or template_ids(reg)
+        # 修复：template_pool 必须是全量模板，否则后续步骤无法进行
+        full_pool = template_ids(reg)
+        
+        # 仅将可行模板用于初始化种群
+        init_pool = mask.feasible_templates or full_pool
+
         if mask.feasible_templates:
-            print(f"Feasible templates for target: {len(mask.feasible_templates)} (of {len(mask.candidate_templates)})")
+            print(f"Feasible templates for target (init only): {len(mask.feasible_templates)} (of {len(mask.candidate_templates)})")
         else:
             print("No feasible templates found; fallback to full template pool.")
 
@@ -56,7 +61,8 @@ def run():
             reg=reg,
             evaluator=evaluator,
             exe=exe,
-            template_pool=template_pool,
+            template_pool=full_pool,     # 搜索空间：全量
+            init_templates=init_pool,    # 初始化偏好：局部可行
             history=hist,
         )
 

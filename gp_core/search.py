@@ -41,17 +41,23 @@ def run_gp_for_target(
     p_mutation: float = config.PMUT,
     seed: int = config.SEED,
     template_pool: Optional[List[str]] = None,
+    init_templates: Optional[List[str]] = None,  # New: specific templates for initialization
     history: Optional[MetricsHistory] = None,
     nonempty_bonus: float = config.NONEMPTY_BONUS,
 ):
     random.seed(seed)
     template_pool = template_pool or list(reg.templates.keys())
+    # If init_templates not provided, fallback to full pool
+    init_templates = init_templates or template_pool
+
     senses = {k: spec.direction() for k, spec in evaluator.specs.items()}
     objective_keys = list(evaluator.specs.keys())
 
     population: List[Dict[str, Any]] = []
     for _ in range(pop_size):
-        prog = random_program(template_pool, min_len=1, max_len=3)
+        # Use init_templates for the first random programs to boost start
+        # But subsequent mutations will use the full template_pool
+        prog = random_program(init_templates if random.random() < 0.8 else template_pool, min_len=1, max_len=3)
         ind = evaluate_program(prog, exe, evaluator, target)
         if nonempty_bonus and getattr(ind["route"], "steps", []):
             ind["fitness"].scalar += nonempty_bonus

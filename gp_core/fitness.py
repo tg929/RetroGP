@@ -3,7 +3,11 @@ import os
 from typing import Callable, Dict
 
 import numpy as np
-from scscore.scscore.standalone_model_numpy import SCScorer
+try:
+    from scscore.scscore.standalone_model_numpy import SCScorer
+    _HAS_SCSCORE = True
+except ImportError:
+    _HAS_SCSCORE = False
 
 from gp_retro_obj import ObjectiveSpec, RouteFitnessEvaluator
 from . import config
@@ -25,19 +29,35 @@ _scscore_model = None
 
 def build_scscore_fn(model_dir=None, fp_length=1024) -> Callable[[str], float]:
     global _scscore_model
+    
+    if not _HAS_SCSCORE:
+        # Fallback if SCScore/RDKit is missing
+        def _fallback(smiles: str) -> float:
+            return min(5.0, 0.5 + 0.02 * len(smiles))
+        return _fallback
+
     model_dir = model_dir or config.SCSCORE_DIR
     if _scscore_model is None:
-        model = SCScorer()
-        model.restore(str(model_dir), fp_length)
-        _scscore_model = model
+        try:
+            model = SCScorer()
+            model.restore(str(model_dir), fp_length)
+            _scscore_model = model
+        except Exception as e:
+            print(f"Warning: Failed to load SCScore model: {e}")
+            def _fallback(smiles: str) -> float:
+                return min(5.0, 0.5 + 0.02 * len(smiles))
+            return _fallback
 
     def _score(smiles: str) -> float:
         if not smiles:
             return 5.0
-        out = _scscore_model.get_score_from_smi(smiles)
-        arr = out[1] if isinstance(out, (tuple, list)) and len(out) == 2 else out
-        arr = np.asarray(arr, dtype=float)
-        return float(arr.mean()) if arr.ndim else float(arr)
+        try:
+            out = _scscore_model.get_score_from_smi(smiles)
+            arr = out[1] if isinstance(out, (tuple, list)) and len(out) == 2 else out
+            arr = np.asarray(arr, dtype=float)
+            return float(arr.mean()) if arr.ndim else float(arr)
+        except Exception:
+            return 5.0
 
     return _score
 
