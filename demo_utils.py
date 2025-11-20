@@ -56,11 +56,35 @@ def load_inventory_from_files(files: Sequence[str], smiles_column: str = "smiles
     return inv
 
 
-def load_templates_from_smirks_file(path: Union[os.PathLike, str], prefix: str = "HB") -> ReactionTemplateRegistry:
-    """Load SMIRKS retro-templates (one per line) and auto-assign IDs."""
+def load_templates_from_smirks_file(
+    path: Union[os.PathLike, str],
+    prefix: str = "HB",
+    keep_multi_product: bool = False,
+    reverse_sides: bool = False,
+) -> ReactionTemplateRegistry:
+    """Load SMIRKS retro-templates (one per line) and auto-assign IDs.
+
+    Many public template dumps包含多产物左侧（对于 rdchiral 逆合成会报 reactant/template 数不匹配）。
+    默认过滤掉左侧含多个片段的模板；若需全部保留，将 keep_multi_product 设为 True。
+    """
     reg = ReactionTemplateRegistry()
+    kept = 0
+    skipped = 0
     for idx, smirks in enumerate(_nonempty_lines(Path(path)), start=1):
-        reg.add(ReactionTemplate(f"{prefix}_{idx:03d}", smirks))
+        if reverse_sides and ">>" in smirks:
+            lhs_raw, rhs_raw = smirks.split(">>", 1)
+            smirks_use = f"{rhs_raw}>>{lhs_raw}"
+        else:
+            smirks_use = smirks
+        lhs = smirks_use.split(">>", 1)[0]
+        if (lhs.count(".") + 1 > 1) and not keep_multi_product:
+            skipped += 1
+            continue
+        kept += 1
+        reg.add(ReactionTemplate(f"{prefix}_{kept:03d}", smirks_use))
+    if skipped:
+        extra = " (after reversal)" if reverse_sides else ""
+        print(f"[load_templates] skipped multi-product templates{extra}: {skipped}, kept: {kept}")
     return reg
 
 

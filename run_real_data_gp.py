@@ -94,10 +94,11 @@ def templates_of_program(prog: Program) -> List[str]:
 
 
 def program_from_templates(template_ids: List[str]) -> Program:
-    steps = [Select(0)]
+    steps = []
     for tid in template_ids:
+        steps.append(Select(0))
         steps.append(ApplyTemplate(tid, rational="gp"))
-    steps.append(Stop())
+    steps.append(Stop())  # 总是用 Stop 结束
     return Program(steps)
 
 
@@ -194,7 +195,13 @@ def load_real_world():
     targets_path = root / "target molecular" / "chembl_small.txt"
 
     inventory = load_inventory_from_files([str(p) for p in inv_files])
-    reg = load_templates_from_smirks_file(templates_path, prefix="HB")
+    # hb.txt 是正向模板，需反转生成逆合成模板；同时过滤掉多产物左侧
+    reg = load_templates_from_smirks_file(
+        templates_path,
+        prefix="HB",
+        keep_multi_product=False,
+        reverse_sides=True,
+    )
     targets = load_targets(targets_path)
     return inventory, reg, targets
 
@@ -311,7 +318,7 @@ def main():
     try:
         inventory, reg, targets = load_real_world()
         # 运行前 N 个目标以控制时间；需要时可调大
-        for tgt in targets[:3]:
+        for tgt in targets[:10]:
             run_gp_search_for_target(
                 tgt,
                 inventory,
