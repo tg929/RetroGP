@@ -23,10 +23,11 @@ class FeasibleExecutor:
       - Only accept ApplyTemplate that passes applicability (and optionally inventory gating)
       - If the chosen template fails, optionally repair by choosing another feasible template
     """
-    def __init__(self, reg: ReactionTemplateRegistry, inventory: Optional[Inventory] = None, policy: ExecutePolicy = ExecutePolicy()):
+    def __init__(self, reg: ReactionTemplateRegistry, inventory: Optional[Inventory] = None, policy: Optional[ExecutePolicy] = None):
         self.reg = reg
         self.inventory = inventory
-        self.policy = policy
+        # Default policy must exist even if caller passes None (bug fix).
+        self.policy = policy or ExecutePolicy()
         self.mask_builder = ActionMaskBuilder(reg, inventory=inventory)
         self.engine = FeasibilityEngine(reg, inventory=inventory)
 

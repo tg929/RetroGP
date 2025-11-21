@@ -31,10 +31,8 @@ def build_scscore_fn(model_dir=None, fp_length=1024) -> Callable[[str], float]:
     global _scscore_model
     
     if not _HAS_SCSCORE:
-        # Fallback if SCScore/RDKit is missing
-        def _fallback(smiles: str) -> float:
-            return min(5.0, 0.5 + 0.02 * len(smiles))
-        return _fallback
+        # No silent fallback: require SCScore dependency to be available.
+        raise ImportError("SCScore is required but not installed; install `scscore` to use build_scscore_fn().")
 
     model_dir = model_dir or config.SCSCORE_DIR
     if _scscore_model is None:
@@ -43,10 +41,7 @@ def build_scscore_fn(model_dir=None, fp_length=1024) -> Callable[[str], float]:
             model.restore(str(model_dir), fp_length)
             _scscore_model = model
         except Exception as e:
-            print(f"Warning: Failed to load SCScore model: {e}")
-            def _fallback(smiles: str) -> float:
-                return min(5.0, 0.5 + 0.02 * len(smiles))
-            return _fallback
+            raise RuntimeError(f"Failed to load SCScore model: {e}")
 
     def _score(smiles: str) -> float:
         if not smiles:

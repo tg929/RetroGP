@@ -35,7 +35,7 @@ def run():
     specs = build_objectives(config.OBJECTIVE_WEIGHTS)
     hist = MetricsHistory()
 
-    for ti, target in enumerate(targets[:10]):
+    for ti, target in enumerate(targets[:3]):
         print(f"\n=== Target {ti+1}: {target} ===")
 
         # 针对当前目标先做一次可行动作掩码，避免全部落空
