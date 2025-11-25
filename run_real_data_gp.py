@@ -27,7 +27,7 @@ def make_audit_fn(stock, target_smiles: str):
             "n_valid_steps": n_steps,
         }
     return audit_route
-
+#git测试
 
 def run():
     inventory, reg, targets = load_world_from_data(limit_targets=None)
